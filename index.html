@@ -1,0 +1,639 @@
+<head>
+<script src="behavior.js"></script>
+<script src="behavior-system.js"></script>
+<script src="render.js"></script>
+<script src="vector.js"></script>
+<script src="math-utils.js"></script>
+
+<title>Crazy Fight</title>
+</head>
+
+<body style="width: 100%; height: 100%; margin: 0px;">
+<canvas id="screen" width="1080" height="720">
+<script>
+'use strict';
+
+let canvas = document.getElementById('screen');
+canvas.width = document.body.clientWidth;
+canvas.height = document.body.clientHeight;
+let context = canvas.getContext('2d');
+
+const PLAYER_STYLE = {
+	fill: 'green',
+	stroke: 'black',
+	lineWidth: 0.02
+};
+
+const AI_STYLE = {
+	fill: 'blue',
+	stroke: 'black',
+	lineWidth: 0.02
+};
+
+const DOT_STYLE = {
+	fill: 'red',
+	stroke: 'black',
+	lineWidth: 0.02
+};
+const DOT_SIZE = 0.1;
+
+const BULLET_STYLE = {
+	fill: 'blue',
+	stroke: 'black',
+	lineWidth: 0.02
+};
+const BULLET_SIZE = 0.1;
+const BULLET_SPEED = 4.0;
+const BULLET_BASE_DAMAGE = 1.0;
+const BULLET_BASE_RANGE = 1.0;
+
+const TARGET_STYLE = {
+	fill: 'lightblue',
+	stroke: 'black',
+	lineWidth: 0.02
+};
+const TARGET_SIZE = 0.2;
+
+const MAX_DOTS = 1000;
+const PLAYER_FORCE = 8.0;
+const DRAG = 0.05;
+const DOT_MASS = 0.1;
+
+const MIN_CHARGE_SPEED = 2;
+const CHARGE_SPEED = 0.05;
+const CAM_BASE_SCALE = 0.3;
+
+const BOOST_COST = 4;
+const BOOST_POWER = 4;
+const BOOST_MAX_TIME = 5;
+
+//==========================================================================================
+//==========================================================================================
+//==========================================================================================
+
+function toWorldCoords(canvasPoint, canvas, camPos, camScale, camRotation) {
+	let p = vec(
+		(canvasPoint.x - 0.5 * canvas.width) / canvas.height,
+		0.5 - canvasPoint.y / canvas.height
+	);
+
+	return vadd(camPos, vdiv(p, camScale));
+}
+
+function isVisible(pos, size, aspect, camPos, camScale, camRotation) {
+	let visibleSize = vec(aspect / camScale.x, 1 / camScale.y);
+	let delta = vmap(vsub(pos, camPos), Math.abs);
+	return (delta.x <= 0.5 * (visibleSize.x + size.x)) || (delta.y <= 0.5 * (visibleSize.y + size.y));
+}
+
+const drawCircle = (context, size, element) => {
+	context.beginPath();
+	context.save();
+
+	transform(context, element.position, 0, vec(size, size)),
+	ballPath(context);
+
+	context.restore();
+
+	// applyStyle(context, style.fill, style.stroke, style.lineWidth);
+}
+
+const setStyle = (context, style) => {
+	if (style.fill) {
+		context.fillStyle = style.fill;
+	}
+	if (style.stroke) {
+		context.strokeStyle = style.stroke;
+		context.lineWidth = style.lineWidth;
+	}
+};
+const appStyle = (context, style) => applyStyle(context, style.fill, style.stroke, style.lineWidth);
+
+const drawDot = (context, element) => {
+	let x = element.position.x;
+	let y = element.position.y;
+	context.moveTo(x + 0.5 * DOT_SIZE, y + 0.5 * DOT_SIZE);
+	context.lineTo(x - 0.5 * DOT_SIZE, y + 0.5 * DOT_SIZE);
+	context.lineTo(x - 0.5 * DOT_SIZE, y - 0.5 * DOT_SIZE);
+	context.lineTo(x + 0.5 * DOT_SIZE, y - 0.5 * DOT_SIZE);
+	// context.lineTo(x + 0.5 * DOT_SIZE, y + 0.5 * DOT_SIZE);
+	context.closePath();
+}
+const drawBullet = (context, element) => {
+	drawCircle(context, bulletSize(element.mass), element);
+	context.fill();
+	context.stroke();
+}
+const drawBall = context => ball => {
+	let size = 0.2 * Math.sqrt(ball.mass);
+	drawCircle(context, size, ball);
+	appStyle(context, ball.style);
+
+	size = bulletSize(ball.charge);
+	drawCircle(context, size, ball);
+	appStyle(context, BULLET_STYLE);
+
+	context.save();
+	context.fillStyle = 'black';
+	context.textAlign = 'center';
+	context.font = '20px Arial';
+	transform(context, vadd(ball.position, vec(0, -0.05)), 0, vec(0.005, 0.005));
+	context.scale(1, -1);
+	let mass = (ball.mass + ball.charge) * 10;
+	context.fillText(mass.toFixed(0), 0, 0);
+	context.restore();
+}
+
+const draw = (context, camera, balls, dots, target) => {
+	let aspect = canvas.width / canvas.height;
+	dots = dots.filter(dot => isVisible(dot.position, vec(DOT_SIZE, DOT_SIZE), aspect, camera.position, camera.scale, camera.rotation));
+
+	context.save();
+
+	applyCamera(context, camera.position, camera.scale, camera.rotation);
+
+	setStyle(context, DOT_STYLE);
+	context.beginPath();
+	for (let dot of dots) {
+		drawDot(context, dot);
+	}
+	for (let dot of lootDots) {
+		drawDot(context, dot);
+	}
+	context.fill();
+	context.stroke();
+
+	balls.forEach(drawBall(context));
+
+	setStyle(context, BULLET_STYLE);
+	for (let bullet of bullets) {
+		drawBullet(context, bullet);
+	}
+
+	context.restore();
+
+	context.fillStyle = 'black';
+	context.font = '20px Georgia';
+
+	let sorted = balls.slice().sort((b1, b2) => (b2.mass + b2.charge) - (b1.mass + b1.charge));
+	for (let i = 0; i < sorted.length; i++) {
+		let ball = sorted[i];
+		let mass = (ball.mass + ball.charge) * 10;
+		context.fillText(ball.name + ': ' + mass.toFixed(0), 10, 30 + 30 * i);
+	}
+};
+
+//=====================================================================================
+//=====================================================================================
+//=====================================================================================
+
+let balls = [
+	{
+		style: PLAYER_STYLE,
+		position: vec(0, 0.2),
+		velocity: vec(0, 0),
+		mass: 1,
+		target: null,
+		charge: 0,
+		name: 'Me'
+	}
+];
+
+for (let i = 0; i < 9; i++) {
+	balls.push({
+		style: AI_STYLE,
+		position: vec(Math.random() * 20 - 10, Math.random() * 20 - 10),
+		velocity: vec(0, 0),
+		mass: 1,
+		target: null,
+		charge: 0,
+		name: 'Enemy ' + i
+	});
+}
+
+let dots = [];
+fillDots();
+
+let lootDots = [];
+
+let bullets = [];
+
+let mousePos = null;
+
+let camera = {
+	position: Object.assign({}, balls[0].position),
+	scale: vec(CAM_BASE_SCALE, CAM_BASE_SCALE),
+	rotation: 0
+};
+
+//=====================================================================================
+//=====================================================================================
+//=====================================================================================
+
+function ballSize(mass) {
+	return 0.2 * Math.sqrt(mass);
+}
+
+function bulletSize(mass) {
+	return 0.05 * Math.sqrt(mass);
+}
+
+function newDot() {
+	return {
+		position: vec(Math.random() * 20 - 10, Math.random() * 20 - 10)
+	};
+}
+
+function fillDots() {
+	for (let i = dots.length; i < MAX_DOTS; i++) {
+		dots.push(newDot());
+	}
+}
+
+function applyForce(ball, dt) {
+	if (!ball.target) { return; }
+
+	let delta = vsub(ball.target, ball.position);
+	let l = vlen(delta);
+
+	if (l > 1) {
+		delta = vscale(delta, 1 / l);
+	}
+
+	let size = ballSize(ball.mass);
+	if (l > 0.5 * size) {
+		let totalMass = ball.mass + ball.charge;
+		let boost = ball.boost ? BOOST_POWER : 1;
+		ball.velocity = vadd(ball.velocity, vscale(delta, boost * PLAYER_FORCE / Math.sqrt(totalMass) * dt));
+	}
+}
+
+function update(dt) {
+	let playerBall = balls[0];
+	playerBall.target = mousePos ? toWorldCoords(mousePos, canvas, camera.position, camera.scale, camera.rotation) : null;
+
+	let drag = Math.pow(DRAG, dt);
+
+	balls.forEach(ball => {
+		applyForce(ball, dt);
+
+		ball.velocity = vscale(ball.velocity, drag);
+		ball.position = vadd(ball.position, vscale(ball.velocity, dt));
+
+		ball.position.x = Math.max(Math.min(ball.position.x, 10), -10);
+		ball.position.y = Math.max(Math.min(ball.position.y, 10), -10);
+
+		for (let i = dots.length - 1; i >= 0; i--) {
+			let dot = dots[i];
+			let size = ballSize(ball.mass);
+			if (vdist(dot.position, ball.position) < 0.5 * (size + DOT_SIZE)) {
+				dots.splice(i, 1);
+				ball.mass += DOT_MASS;
+				dot.consumed = true;
+			}
+		}
+	});
+
+	fillDots();
+
+	// camera.position = Object.assign({}, balls[0].position);
+}
+
+const loot = (receiver, pos, dir) => Behavior.run(function*() {
+	let dot = {
+		position: vclone(pos)
+	};
+	lootDots.push(dot);
+
+	yield Behavior.first(
+		Behavior.run(function*() {
+			let start = vclone(pos);
+			let end = vadd(pos, vscale(vrot(dir, Math.random() * 2 * Math.PI), Math.random(0.5)));
+			yield Behavior.interval(0.5, function(progress) {
+				dot.position = vlerp(start, end, Math.pow(progress, 0.3));
+			});
+
+			start = vclone(dot.position);
+			yield Behavior.interval(0.5, function(progress) {
+				dot.position = vlerp(start, receiver.position, Math.pow(progress, 0.5));
+			});
+
+			receiver.mass += DOT_MASS;
+		}),
+		Behavior.update(function() {
+			if (receiver.dead) {
+				dots.push({
+					position: vclone(dot.position)
+				});
+				return true;
+			}
+		})
+	);
+
+	dot.dead = true;
+});
+
+function bulletRange(mass) {
+	return BULLET_BASE_RANGE * Math.max(mass, 1);
+}
+
+const newBullet = (ball, dir) => Behavior.run(function*() {
+	let bullet = {
+		origin: ball,
+		position: vclone(ball.position),
+		mass: ball.charge
+	};
+	bullets.push(bullet);
+
+	let speed = BULLET_SPEED / Math.pow(bullet.mass, 0.2);
+	let start = vclone(bullet.position);
+	let range = bulletRange(bullet.mass);
+
+	yield Behavior.update(function(dt) {
+		if (vdist(bullet.position, start) >= range) {
+			bullet.dead = true;
+			return true;
+		}
+
+		bullet.position = vadd(bullet.position, vscale(dir, speed * dt));
+
+		for (let ball of balls) {
+			if (ball === bullet.origin) { continue; }
+
+			let size = ballSize(ball.mass);
+			if (vdist(ball.position, bullet.position) < 0.5 * (BULLET_SIZE + size)) {
+				bullet.dead = true;
+
+				let delta = vnorm(vsub(ball.position, bullet.position));
+				ball.velocity = vadd(ball.velocity, vscale(dir, 1));
+
+				let damage = BULLET_BASE_DAMAGE * bullet.mass;
+				ball.mass -= damage;
+				if (ball.mass <= 1) {
+					ball.dead = true;
+					damage += ball.mass;
+				}
+
+				damage += bullet.mass;
+
+				for (let i = 0; i < damage; i += DOT_MASS) {
+					behaviorSystem.add(loot(bullet.origin, bullet.position, vneg(delta)));
+				}
+
+				break;
+			}
+		}
+
+		if (bullet.dead) {
+			return true;
+		}
+	});
+})
+
+const shoot = (ball, stopCharging) => Behavior.run(function*() {
+	if (!ball.target || (ball.mass <= 1)) { return; }
+
+	let charge = 0;
+	yield Behavior.first(
+		Behavior.update(function(dt) {
+			if (ball.charge >= (ball.mass + ball.charge) * 0.5) { return;	}
+
+			let amount = Math.max(ball.mass * CHARGE_SPEED, MIN_CHARGE_SPEED) * dt;
+			charge += amount;
+
+			while (charge > DOT_MASS) {
+				ball.mass -= DOT_MASS;
+				ball.charge += DOT_MASS;
+				charge -= DOT_MASS;
+			}
+		}),
+		stopCharging
+	);
+
+	charge = ball.charge;
+
+	let delta = vsub(ball.target, ball.position);
+	let l = vlen(delta);
+
+	let size = ballSize(ball.mass);
+	if (l > 0.5 * size) {
+		behaviorSystem.add(newBullet(ball, vscale(delta, 1 / l)));
+		yield Behavior.wait(0.2);
+	} else {
+		let mass = ball.mass;
+		yield Behavior.interval(0.2, function(progress) {
+			ball.mass = Math.lerp(mass, mass + charge, progress);
+			ball.charge = Math.lerp(charge, 0, progress);
+		});
+	}
+
+	ball.charge = 0;
+});
+
+const playerShoot = () => Behavior.run(function*() {
+	yield Behavior.type('mousedown');
+	yield shoot(balls[0], Behavior.type('mouseup'));
+});
+
+const playerBoost = () => Behavior.run(function*() {
+	yield Behavior.type('keydown');
+
+	console.log('Boost');
+
+	let playerBall = balls[0];
+	playerBall.boost = true;
+
+	yield Behavior.first(
+		Behavior.update(function(dt) {
+			if (playerBall.mass <= 1) {
+				return true;
+			}
+			playerBall.mass -= BOOST_COST * dt;
+		}),
+		Behavior.wait(BOOST_MAX_TIME),
+		Behavior.type('keyup')
+	);
+
+	console.log('Normal');
+
+	playerBall.boost = false;
+});
+
+const setMousePos = () => Behavior.run(function*() {
+	mousePos = (yield Behavior.type('mousemove')).pos;	
+});
+
+const consumeDot = ball => Behavior.run(function*() {
+	let closest = dots[0];
+	let closestDistance = vdist(closest.position, ball.position);
+
+	for (let i = 1; i < dots.length; i++) {
+		let dot = dots[i];
+		let distance = vdist(dot.position, ball.position);
+		if (distance < closestDistance) {
+			closestDistance = distance;
+			closest = dot;
+		}
+	}
+
+	yield Behavior.update(function() {
+		let d = vsub(closest.position, ball.position);
+		ball.target = vadd(closest.position, vnorm(d));
+		if (closest.consumed) {
+			return true;
+		}
+	});
+});
+
+const kill = (ball, enemy) => Behavior.run(function*() {
+	yield shoot(ball, Behavior.update(function() {
+		if (enemy.dead) { return true; }
+
+		ball.target = vclone(enemy.position);
+
+		let bigEnough = ball.charge > enemy.mass;
+		let rangeEnough = vdist(ball.position, enemy.position) < bulletRange(ball.charge);
+		let sizeEnough = ball.charge > 0.2 * (ball.mass + ball.charge);
+		if (bigEnough || sizeEnough && rangeEnough) {
+			return true;
+		}
+	}));
+});
+
+const aiBehavior = ball => Behavior.run(function*() {
+	yield Behavior.first(
+		Behavior.run(function*() {
+			while (true) {
+				let next = consumeDot(ball);
+				for (let enemy of balls) {
+					if (enemy === ball) { continue; }
+
+					if (ball.mass > 4 && vdist(ball.position, enemy.position) < 4) {
+						if (ball.mass > 1 && ball.mass > 0.2 * enemy.mass) {
+							next = kill(ball, enemy);
+							break;
+						}
+					}
+				}
+
+				yield next
+			}
+		}),
+		Behavior.update(function() {
+			if (ball.dead) {
+				return true;
+			}
+		})
+	);
+});
+
+function killDead() {
+	for (let i = bullets.length - 1; i >= 0; i--) {
+		if (bullets[i].dead) {
+			bullets.splice(i, 1);
+		}
+	}
+
+	for (let i = lootDots.length - 1; i >= 0; i--) {
+		if (lootDots[i].dead) {
+			lootDots.splice(i, 1);
+		}
+	}
+
+	for (let i = 0; i < balls.length; i++) {
+		let ball = balls[i];
+		if (ball.dead) {
+			let position = vec(Math.random() * 20 - 10, Math.random() * 20 - 10);
+			let newBall = {
+				style: ball.style,
+				name: ball.name,
+
+				position: position,
+				velocity: vec(0, 0),
+				target: vclone(position),
+				mass: 1,
+				charge: 0
+			};
+			balls[i] = newBall;
+			if (i > 0) {
+				behaviorSystem.add(aiBehavior(newBall));
+			}
+		}
+	}
+}
+
+function updateCamera(dt) {
+	let playerBall = balls[0];
+	let size = ballSize(playerBall.mass + playerBall.charge);
+	let scale = CAM_BASE_SCALE / Math.pow(playerBall.mass, 0.1);
+
+	camera.position = vlerp(camera.position, playerBall.position, 0.1);
+	camera.scale = vlerp(camera.scale, vec(scale, scale), 0.01);
+}
+
+let behaviorSystem = BehaviorSystem();
+function updateBehaviorSystem(event) {
+	behaviorSystem.update(event);
+	return { done: false };
+}
+
+balls.slice(1).forEach(ball => behaviorSystem.add(aiBehavior(ball)));
+
+let behavior = Behavior.first(
+	Behavior.repeat(setMousePos),
+	Behavior.repeat(playerShoot),
+	Behavior.repeat(playerBoost),
+	Behavior.update(update),
+	updateBehaviorSystem,
+	Behavior.update(killDead),
+	Behavior.update(updateCamera)
+);
+
+//=====================================================================================
+//=====================================================================================
+//=====================================================================================
+
+let lastTime = performance.now();
+requestAnimationFrame(function animate() {
+	let time = performance.now();
+	let dt = (time - lastTime) * 0.001;
+	lastTime = time;
+
+	behavior({ type: 'update', dt: dt });
+
+	context.clearRect(0, 0, canvas.width, canvas.height);
+	draw(context, camera, balls, dots, context);
+
+	requestAnimationFrame(animate);
+});
+
+function getMousePos(canvas, event) {
+	let rect = canvas.getBoundingClientRect();
+	return {
+		x: event.clientX - rect.left,
+		y: event.clientY - rect.top
+	};
+}
+
+canvas.addEventListener('mousedown', function(event) {
+	let mousePos = getMousePos(canvas, event);
+	behavior({ type: 'mousedown', pos: mousePos });
+});
+canvas.addEventListener('mouseup', function(event) {
+	let mousePos = getMousePos(canvas, event);
+	behavior({ type: 'mouseup', pos: mousePos });
+});
+canvas.addEventListener('mousemove', function(event) {
+	let mousePos = getMousePos(canvas, event);
+	behavior({ type: 'mousemove', pos: mousePos });	
+});
+
+document.addEventListener('keydown', function(event) {
+	behavior({ type: 'keydown', event: event });
+});
+document.addEventListener('keyup', function(event) {
+	behavior({ type: 'keyup', event: event });
+});
+
+</script>
+</body>
